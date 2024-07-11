@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"time"
 
@@ -21,7 +22,7 @@ func main() {
 	server.Use(cors.New(cors.Config{
 		AllowOrigins:     []string{"http://localhost:5173"},
 		AllowMethods:     []string{"PUT", "PATCH", "GET", "POST"},
-		AllowHeaders:     []string{"Origin", "Content-Type"},
+		AllowHeaders:     []string{"Origin", "Content-Type", "text/event-stream"},
 		ExposeHeaders:    []string{"Content-Length"},
 		AllowCredentials: true,
 		AllowOriginFunc: func(origin string) bool {
@@ -32,12 +33,62 @@ func main() {
 	server.GET(("/chat"), func(c *gin.Context) {
 		c.JSON(200, gin.H{"message": "hello"})
 	})
+	server.POST("/chat-stream", func(c *gin.Context) {
+		var params struct {
+			Text string `json:"text"`
+		}
+		client := arkruntime.NewClientWithApiKey(
+			os.Getenv("ARK_API_KEY"),
+			arkruntime.WithBaseUrl("https://ark.cn-beijing.volces.com/api/v3"),
+			arkruntime.WithRegion("cn-beijing"),
+		)
+
+		ctx := context.Background()
+		req := model.ChatCompletionRequest{
+			Model: "ep-20240708031540-z8w8q",
+			Messages: []*model.ChatCompletionMessage{
+				{
+					Role: model.ChatMessageRoleSystem,
+					Content: &model.ChatCompletionMessageContent{
+						StringValue: volcengine.String("你是豆包，是由字节跳动开发的 AI 人工智能助手"),
+					},
+				},
+				{
+					Role: model.ChatMessageRoleUser,
+					Content: &model.ChatCompletionMessageContent{
+						StringValue: volcengine.String("常见的十字花科植物有哪些？"),
+					},
+				},
+			},
+		}
+		stream, err := client.CreateChatCompletionStream(ctx, req)
+		if err != nil {
+			fmt.Printf("stream chat error: %v\n", err)
+			return
+		}
+		defer stream.Close()
+
+		for {
+			recv, err := stream.Recv()
+			if err == io.EOF {
+				return
+			}
+			if err != nil {
+				fmt.Printf("Stream chat error: %v\n", err)
+				return
+			}
+
+			if len(recv.Choices) > 0 {
+				fmt.Print(recv.Choices[0].Delta.Content)
+			}
+		}
+	})
 	server.POST("/chat", func(c *gin.Context) {
 
 		var params struct {
 			Text string `json:"text"`
 		}
-		c.ShouldBindJSON(&params)
+		c.BindJSON(&params)
 		fmt.Printf(params.Text)
 		client := arkruntime.NewClientWithApiKey(
 			os.Getenv("ARK_API_KEY"),
@@ -92,7 +143,8 @@ func main() {
 		// 		fmt.Print(recv.Choices[0].Delta.Content)
 		// 	}
 		// }
-		if err := c.ShouldBindJSON(&params); err != nil {
+		fmt.Println("Received raw data before binding:", c.Request.Body)
+		if err != nil {
 			fmt.Println("绑定错误信息:", err)
 			c.JSON(400, gin.H{
 				"error": "invalid params",
